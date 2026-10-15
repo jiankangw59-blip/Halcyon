@@ -1529,7 +1529,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     internal fun libraryRootItem(): MediaItem {
-        return MediaItem.Builder()
+        Log.e("ELLAFIX", "PlaybackService MediaItem.Builder called")
+            return MediaItem.Builder()
             .setMediaId(LIBRARY_ROOT_ID)
             .setMediaMetadata(
                 MediaMetadata.Builder()
@@ -1544,7 +1545,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     internal fun currentQueueFolderItem(): MediaItem {
-        return MediaItem.Builder()
+        Log.e("ELLAFIX", "PlaybackService MediaItem.Builder called")
+            return MediaItem.Builder()
             .setMediaId(LIBRARY_QUEUE_ID)
             .setMediaMetadata(
                 MediaMetadata.Builder()
