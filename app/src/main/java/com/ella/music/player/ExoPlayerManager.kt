@@ -20,6 +20,9 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.ella.music.data.AppLogStore
 import com.ella.music.data.SettingsManager
+import com.ella.music.data.lx.LxOnlineService
+import com.ella.music.data.lx.LxOnlineSong
+import kotlinx.coroutines.flow.first
 import com.ella.music.data.isMediaStoreAlbumArtworkUri
 import com.ella.music.data.model.Song
 import com.ella.music.data.repository.MusicRepository
@@ -1110,6 +1113,14 @@ class ExoPlayerManager(private val context: Context) {
 
     fun playQueueIndex(index: Int, startPlayback: Boolean = true) {
         if (index !in playlist.indices) return
+        // [library-online-fix] Songs imported from external players (LX Music, MusicFree, ...) keep
+        // onlineSource/onlineId but ship with an empty path, because those players resolve playback
+        // URLs lazily. songToMediaItem() then turns the empty path into an empty Uri via
+        // playbackUri(), and ExoPlayer's FileDataSource treats it as a local file:
+        //   java.io.FileNotFoundException: : open failed: ENOENT
+        //   PlaybackException code=ERROR_CODE_IO_FILE_NOT_FOUND uri=
+        // Resolve the real URL first, swap just that MediaItem, then replay through the normal path.
+        if (resolveLibraryOnlineSongIfNeeded(index, startPlayback)) return
         cancelPendingSeekCommand()
         externalSnapshotGuard = null
         suppressExternalSnapshotsUntilMs = 0L
@@ -1125,6 +1136,58 @@ class ExoPlayerManager(private val context: Context) {
         requestTransportState(target = startPlayback, controller = mediaController)
         updateCurrentSong()
         savePlaybackQueue(force = true)
+    }
+
+    /**
+     * [library-online-fix] Resolves an unresolved online song from the library queue on demand.
+     *
+     * Returns true when this call takes over: resolution runs asynchronously and replays the entry
+     * through [playQueueIndex] once a real URL is available. Returns false for songs that are
+     * already playable (local files / direct URLs) and for entries without online identity, so the
+     * pre-existing fast path stays untouched.
+     */
+    private fun resolveLibraryOnlineSongIfNeeded(index: Int, shouldPlay: Boolean): Boolean {
+        val target = playlist.getOrNull(index) ?: return false
+        if (target.path.isNotBlank()) return false
+        if (target.onlineSource.isBlank() || target.onlineId.isBlank()) return false
+
+        persistenceScope.launch {
+            val resolved = runCatching {
+                val script = SettingsManager.getInstance(context).selectedLxSource.first()?.script.orEmpty()
+                if (script.isBlank()) return@runCatching null
+                LxOnlineService(context).resolvePlayableSong(
+                    LxOnlineSong(
+                        song = target,
+                        source = target.onlineSource,
+                        songmid = target.onlineId,
+                        quality = "",
+                        coverUrl = target.coverUrl
+                    ),
+                    script
+                )
+            }.getOrNull()
+
+            if (resolved == null || resolved.path.isBlank()) {
+                AppLogStore.warn(
+                    context, "PlayerQueue",
+                    "resolveLibraryOnline failed title=${target.title} source=${target.onlineSource} id=${target.onlineId}"
+                )
+                return@launch
+            }
+            AppLogStore.info(
+                context, "PlayerQueue",
+                "resolveLibraryOnline ok title=${target.title} url=${resolved.path.take(96)}"
+            )
+
+            val at = playlist.indexOfFirst { it.id == target.id && it.path.isBlank() }
+                .takeIf { it >= 0 } ?: index
+            if (at !in playlist.indices) return@launch
+            playlist[at] = resolved
+            _playlist.value = playlist.toList()
+            activeController()?.replaceMediaItem(at, songToMediaItem(resolved))
+            commandScope.launch { playQueueIndex(at, shouldPlay) }
+        }
+        return true
     }
 
     fun removeFromPlaylist(index: Int) {
