@@ -79,3 +79,17 @@
 -keep class org.apache.commons.net.ftp.parser.** { public <init>(...); }
 # Dictionary suppliers are also constructed by Class.newInstance().
 -keep,allowobfuscation class com.github.houbb.opencc4j.support.data.impl.** { public <init>(); }
+
+
+# ---------------------------------------------------------------------------
+# [library-online-fix] Keep the diagnostic logging reachable in R8-optimized
+# release builds. Without this, R8 inlines/removes AppLogStore plumbing and the
+# PlayerQueue evidence lines never reach logcat, which makes the empty-URI
+# playback failure (ERROR_CODE_IO_FILE_NOT_FOUND) impossible to diagnose.
+# ---------------------------------------------------------------------------
+-keep class com.ella.music.data.AppLogStore { *; }
+-keepclassmembers class com.ella.music.player.ExoPlayerManager {
+    *** songToMediaItem(...);
+    *** resolveLibraryOnlineSongIfNeeded(...);
+    *** playQueueIndex(...);
+}
