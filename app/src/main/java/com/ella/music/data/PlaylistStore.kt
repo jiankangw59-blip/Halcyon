@@ -10,6 +10,14 @@ import androidx.documentfile.provider.DocumentFile
 import com.ella.music.R
 import com.ella.music.data.model.FAVORITES_PLAYLIST_ID
 import com.ella.music.data.model.Song
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineScope
+import com.ella.music.data.model.toSong
+import com.ella.music.data.lx.LxOnlineSong
+import com.ella.music.data.lx.LxOnlineService
+import com.ella.music.data.SettingsManager
 import com.ella.music.data.model.UserPlaylist
 import com.ella.music.data.model.playlistIdentityKey
 import com.ella.music.data.model.toJson
@@ -68,7 +76,14 @@ class PlaylistStore private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val file = File(appContext.filesDir, "ella_playlists.json")
     private val lock = Any()
+    // Detached from any ViewModel: app-lifetime work for auto URL resolution.
+    private val autoResolveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _playlists = MutableStateFlow(loadPlaylists())
+
+    init {
+        // Keep previously imported playlists playable: fill in URLs missing from older imports.
+        autoResolveScope.launch { runCatching { resolveMissingOnlineUrls() } }
+    }
 
     val playlists: StateFlow<List<UserPlaylist>> = _playlists.asStateFlow()
 
@@ -194,6 +209,79 @@ class PlaylistStore private constructor(context: Context) {
             }
             _playlists.value = next
             saveLocked(next)
+        }
+        // Songs imported from LX Music / MusicFree carry no URL; resolve them in the background so
+        // the import itself stays fast and the playlist becomes fully playable without manual work.
+        autoResolveScope.launch { runCatching { resolveMissingOnlineUrls() } }
+    }
+
+    /**
+     * Resolve playback URLs for online songs that were imported without one.
+     *
+     * External players (LX Music, MusicFree, ...) only write `path` for tracks that were actually
+     * played, so an imported playlist usually arrives with most entries unresolved. An empty path
+     * becomes an empty Uri in [songToMediaItem], which ExoPlayer then opens as a local file:
+     *   java.io.FileNotFoundException: : open failed: ENOENT
+     *   PlaybackException code=ERROR_CODE_IO_FILE_NOT_FOUND uri=
+     *
+     * This mirrors [updateSongsMetadata]: playlist keys and insertion timestamps stay stable, so it
+     * is a metadata-only update that never changes order or duplicate filtering.
+     *
+     * @return number of playlist entries updated.
+     */
+    suspend fun resolveMissingOnlineUrls(): Int = withContext(Dispatchers.IO) {
+        val script = runCatching {
+            SettingsManager.getInstance(appContext).selectedLxSource.first()?.script.orEmpty()
+        }.getOrDefault("")
+        if (script.isBlank()) return@withContext 0
+
+        val targets = playlists.value
+            .flatMap { it.songs }
+            .filter { it.path.isBlank() && it.onlineSource.isNotBlank() && it.onlineId.isNotBlank() }
+            .distinctBy { it.key }
+        if (targets.isEmpty()) return@withContext 0
+
+        val service = LxOnlineService(appContext)
+        val resolvedByKey = mutableMapOf<String, Song>()
+        targets.forEach { entry ->
+            runCatching {
+                service.resolvePlayableSong(
+                    LxOnlineSong(
+                        song = entry.toSong(),
+                        source = entry.onlineSource,
+                        songmid = entry.onlineId,
+                        quality = ""
+                    ),
+                    script
+                )
+            }.getOrNull()?.takeIf { it.path.isNotBlank() }?.let { resolvedByKey[entry.key] = it }
+        }
+        if (resolvedByKey.isEmpty()) return@withContext 0
+
+        synchronized(lock) {
+            var changed = 0
+            val next = playlists.value.map { playlist ->
+                val updatedSongs = playlist.songs.map { existing ->
+                    val resolved = resolvedByKey[existing.key]
+                    if (resolved == null) {
+                        existing
+                    } else {
+                        val replacement = resolved.toPlaylistSong(existing.addedAt).copy(key = existing.key)
+                        if (replacement != existing) changed++
+                        replacement
+                    }
+                }
+                if (updatedSongs == playlist.songs) {
+                    playlist
+                } else {
+                    playlist.copy(songs = updatedSongs, updatedAt = System.currentTimeMillis())
+                }
+            }
+            if (changed > 0) {
+                _playlists.value = next
+                saveLocked(next)
+            }
+            changed
         }
     }
 
