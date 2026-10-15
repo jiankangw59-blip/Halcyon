@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
-import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 import com.ella.music.data.lx.LxOnlineService
 import com.ella.music.data.lx.LxOnlineSong
@@ -51,12 +50,10 @@ internal class OnlineResolvingDataSource(
 
         val source = uri.host.orEmpty()
         val songmid = uri.lastPathSegment.orEmpty()
+        // IOException is what DataSource.open() is allowed to throw; ExoPlayer turns it into a
+        // PlaybackException just like any other source failure.
         val resolved = resolve(source, songmid)
-            ?: throw HttpDataSource.HttpDataSourceException(
-                IllegalStateException("no playable url for $source:$songmid"),
-                dataSpec,
-                HttpDataSource.HttpDataSourceException.TYPE_OPEN
-            )
+            ?: throw java.io.IOException("no playable url for $source:$songmid")
 
         active = upstream
         return upstream.open(dataSpec.buildUpon().setUri(Uri.parse(resolved)).build())
@@ -82,11 +79,17 @@ internal class OnlineResolvingDataSource(
             val script = SettingsManager.getInstance(context)
                 .selectedLxSource.first()?.script.orEmpty()
             if (script.isBlank()) return@runCatching null
+            // Only onlineSource/onlineId matter: resolvePlayableSong() derives everything else
+            // from the source response and copies the rest of the stub through unchanged.
             val stub = Song(
                 id = 0L,
                 title = "",
                 artist = "",
+                album = "",
+                albumId = 0L,
+                duration = 0L,
                 path = "",
+                fileName = "",
                 onlineSource = source,
                 onlineId = songmid
             )
