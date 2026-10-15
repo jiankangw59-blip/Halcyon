@@ -372,7 +372,13 @@ class PlaybackService : MediaLibraryService() {
             } else dataSpec
         }
         // NetEase streams go through an on-disk cache keyed by song + quality (replays cost no data).
-        val dataSourceFactory = com.ella.music.data.netease.NeteaseStreamCache.dataSourceFactory(this, resolvingDataSourceFactory)
+        // Outermost layer: turns the ella-online:// placeholders of unresolved online songs into a
+// freshly resolved URL on every open. Wrapping here covers both the main player and the
+// crossfade standby player, since the same factory instance is handed to both.
+val dataSourceFactory = com.ella.music.data.OnlineResolvingDataSource.factory(
+    this,
+    com.ella.music.data.netease.NeteaseStreamCache.dataSourceFactory(this, resolvingDataSourceFactory)
+)
         val pluginPlaybackClient = okhttp3.OkHttpClient.Builder()
             .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
