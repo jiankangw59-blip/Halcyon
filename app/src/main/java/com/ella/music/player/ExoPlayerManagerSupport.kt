@@ -81,6 +81,13 @@ internal fun buildPseudoShuffleSeed(sourceOrder: List<Song>, current: Song): Lon
     return seed
 }
 
+/**
+ * URI scheme used for online songs that have no resolved playback URL yet. It is swapped for
+ * the real https URL by [com.ella.music.data.OnlineResolvingDataSource] each time ExoPlayer
+ * opens the item, so a stale or absent URL never reaches the player as an empty Uri.
+ */
+internal const val ONLINE_PLAYBACK_SCHEME = "ella-online"
+
 internal fun Song.playbackUri(): Uri {
     RemoteAudioCache.localFileIfCached(this)?.let { cached ->
         return Uri.fromFile(cached)
@@ -90,6 +97,16 @@ internal fun Song.playbackUri(): Uri {
     }
     if (onlineSource.isBlank() && path.startsWith("/") && id > 0L) {
         return ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+    }
+    // Songs imported from external players (LX Music, MusicFree, ...) keep onlineSource/
+    // onlineId but ship without a path. Returning `"".toUri()` here made ExoPlayer treat the
+    // entry as a local file:
+    //   java.io.FileNotFoundException: : open failed: ENOENT
+    //   PlaybackException code=ERROR_CODE_IO_FILE_NOT_FOUND uri=
+    // Hand out a resolvable placeholder instead; OnlineResolvingDataSource swaps it for a
+    // freshly resolved URL on every open.
+    if (path.isBlank() && onlineSource.isNotBlank() && onlineId.isNotBlank()) {
+        return Uri.parse("$ONLINE_PLAYBACK_SCHEME://$onlineSource/$onlineId")
     }
     return if (path.startsWith("/")) Uri.fromFile(File(path)) else path.toUri()
 }
