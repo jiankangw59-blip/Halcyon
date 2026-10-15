@@ -17,6 +17,7 @@ on:
         options:
           - debug
           - release
+          - fastrelease
 
 permissions:
   contents: read
@@ -84,6 +85,13 @@ jobs:
           ALLOW_DEBUG_SIGNED_RELEASE: "true"
         run: ./gradlew --no-daemon :app:assembleRelease -PellaAbi=arm64-v8a --stacktrace
 
+      - name: Build fastRelease APK (unminified release, keeps Log output)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_type == 'fastrelease' }}
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          ALLOW_DEBUG_SIGNED_RELEASE: "true"
+        run: ./gradlew --no-daemon :app:assembleFastRelease -PellaAbi=arm64-v8a --stacktrace
+
       - name: List APK outputs
         run: |
           find app/build/outputs/apk -type f -name "*.apk" -print -exec ls -lh {} \;
@@ -96,6 +104,7 @@ jobs:
           path: |
             app/build/outputs/apk/debug/*arm64-v8a*.apk
             app/build/outputs/apk/release/*arm64-v8a*.apk
+            app/build/outputs/apk/fastrelease/*arm64-v8a*.apk
             app/build/outputs/renamed-apk/debug/*arm64-v8a*.APK
             app/build/outputs/renamed-apk/release/*arm64-v8a*.APK
           if-no-files-found: error
