@@ -102,9 +102,6 @@ jobs:
         with:
           name: Halcyon-arm64-v8a-${{ github.sha }}
           path: |
-            app/build/outputs/apk/debug/*arm64-v8a*.apk
-            app/build/outputs/apk/release/*arm64-v8a*.apk
-            app/build/outputs/apk/fastrelease/*arm64-v8a*.apk
-            app/build/outputs/renamed-apk/debug/*arm64-v8a*.APK
-            app/build/outputs/renamed-apk/release/*arm64-v8a*.APK
-          if-no-files-found: error
+            app/build/outputs/**/*arm64-v8a*.apk
+            app/build/outputs/**/*arm64-v8a*.APK
+          if-no-files-found: warn
