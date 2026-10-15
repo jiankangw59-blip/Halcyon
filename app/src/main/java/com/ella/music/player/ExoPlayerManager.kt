@@ -797,6 +797,7 @@ class ExoPlayerManager(private val context: Context) {
         startPlayback: Boolean = true
     ) {
         if (songs.isEmpty()) return
+        Log.e("ELLAFIX", "setPlaylist size=${songs.size} start=$startIndex blankPaths=${songs.count { it.path.isBlank() }} onlineOnes=${songs.count { it.onlineSource.isNotBlank() || it.onlineId.isNotBlank() }}")
         cancelPendingSeekCommand()
         if (resetQueueLock) _queueLocked.value = false
         val requestedIndex = startIndex.coerceIn(songs.indices)
@@ -914,6 +915,7 @@ class ExoPlayerManager(private val context: Context) {
         resolvedSong: Song,
         shouldPlay: Boolean = true
     ) {
+        Log.e("ELLAFIX", "playResolvedFromVirtualQueue size=${songs.size} index=${currentIndex}")
         if (songs.isEmpty()) return
         cancelPendingSeekCommand()
         val safeIndex = currentIndex.coerceIn(songs.indices)
@@ -1113,6 +1115,7 @@ class ExoPlayerManager(private val context: Context) {
 
     fun playQueueIndex(index: Int, startPlayback: Boolean = true) {
         if (index !in playlist.indices) return
+        Log.e("ELLAFIX", "playQueueIndex index=$index size=${playlist.size} title=${playlist.getOrNull(index)?.title} path=[${playlist.getOrNull(index)?.path}]")
         // [library-online-fix] Songs imported from external players (LX Music, MusicFree, ...) keep
         // onlineSource/onlineId but ship with an empty path, because those players resolve playback
         // URLs lazily. songToMediaItem() then turns the empty path into an empty Uri via
@@ -1370,6 +1373,7 @@ class ExoPlayerManager(private val context: Context) {
     }
 
     fun playSong(song: Song) {
+        Log.e("ELLAFIX", "playSong title=${song.title} path=[${song.path}] src=${song.onlineSource} id=${song.onlineId}")
         // A direct play request for the already-playing identity must keep its actual queue
         // occurrence.  Searching by identity alone would jump from the second duplicate back to
         // the first one.
@@ -2162,13 +2166,9 @@ class ExoPlayerManager(private val context: Context) {
         // here will become an empty Uri and fail in ExoPlayer with
         //   FileNotFoundException: : open failed: ENOENT / ERROR_CODE_IO_FILE_NOT_FOUND
         // Logging it names the exact queue entry and call site instead of failing silently.
-        if (song.path.isBlank() && (song.onlineSource.isNotBlank() || song.onlineId.isNotBlank())) {
-            AppLogStore.error(
-                context, "PlayerQueue",
-                "UNRESOLVED online song reached songToMediaItem: title=${song.title} " +
-                    "source=${song.onlineSource} id=${song.onlineId} queueIndex=${_currentQueueIndex.value}"
-            )
-        }
+        Log.e("ELLAFIX", "songToMediaItem title=${song.title} path=[${song.path}] " +
+            "src=${song.onlineSource} id=${song.onlineId} uri=[${song.playbackUri()}] " +
+            "queueIndex=${_currentQueueIndex.value}")
         val cachedArtwork = notificationArtworkCache.get(song.notificationArtworkKey())
         val builder = MediaItem.Builder()
             .setUri(song.playbackUri())
