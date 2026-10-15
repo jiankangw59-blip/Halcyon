@@ -11,6 +11,7 @@ import com.ella.music.R
 import com.ella.music.data.model.FAVORITES_PLAYLIST_ID
 import com.ella.music.data.model.Song
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.CoroutineScope
@@ -81,8 +82,18 @@ class PlaylistStore private constructor(context: Context) {
     private val _playlists = MutableStateFlow(loadPlaylists())
 
     init {
-        // Keep previously imported playlists playable: fill in URLs missing from older imports.
-        autoResolveScope.launch { runCatching { resolveMissingOnlineUrls() } }
+        // Keep imported playlists playable without any manual step. Playlists can arrive through
+        // several paths (addSongsToPlaylist, importLocalPlaylist(s)(Files), backup restore, ...),
+        // so instead of hooking each one this sweeps periodically:
+        //   - fills in URLs missing from older imports
+        //   - picks up playlists added through any import path, present or future
+        //   - retries entries the source failed on (it rate-limits with UPSTREAM_CIRCUIT_OPEN)
+        autoResolveScope.launch {   // autoResolveLoop
+            while (true) {
+                runCatching { resolveMissingOnlineUrls() }
+                delay(AUTO_RESOLVE_INTERVAL_MS)
+            }
+        }
     }
 
     val playlists: StateFlow<List<UserPlaylist>> = _playlists.asStateFlow()
@@ -838,6 +849,9 @@ class PlaylistStore private constructor(context: Context) {
 
     companion object {
         private const val TAG = "PlaylistStore"
+
+    /** How often to sweep for online songs that still lack a playback URL. */
+    private const val AUTO_RESOLVE_INTERVAL_MS = 30_000L
 
         @Volatile
         private var instance: PlaylistStore? = null
