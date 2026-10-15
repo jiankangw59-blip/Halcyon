@@ -1187,7 +1187,11 @@ class ExoPlayerManager(private val context: Context) {
             activeController()?.replaceMediaItem(at, songToMediaItem(resolved))
             commandScope.launch { playQueueIndex(at, shouldPlay) }
         }
-        return true
+        // Do NOT take over: the caller must still run its own seek/prepare/state updates.
+        // Returning true here previously skipped cancelPendingSeekCommand/seekTo/
+        // requestTransportState/updateCurrentSong entirely, so a failed or slow resolution left
+        // the player stuck in ERROR and the bottom player sheet unresponsive.
+        return false
     }
 
     fun removeFromPlaylist(index: Int) {
@@ -2154,6 +2158,17 @@ class ExoPlayerManager(private val context: Context) {
     }
 
     private fun songToMediaItem(song: Song): MediaItem {
+        // [library-online-fix] Last-resort tripwire. An online song that still has no resolved path
+        // here will become an empty Uri and fail in ExoPlayer with
+        //   FileNotFoundException: : open failed: ENOENT / ERROR_CODE_IO_FILE_NOT_FOUND
+        // Logging it names the exact queue entry and call site instead of failing silently.
+        if (song.path.isBlank() && (song.onlineSource.isNotBlank() || song.onlineId.isNotBlank())) {
+            AppLogStore.error(
+                context, "PlayerQueue",
+                "UNRESOLVED online song reached songToMediaItem: title=${song.title} " +
+                    "source=${song.onlineSource} id=${song.onlineId} queueIndex=${_currentQueueIndex.value}"
+            )
+        }
         val cachedArtwork = notificationArtworkCache.get(song.notificationArtworkKey())
         val builder = MediaItem.Builder()
             .setUri(song.playbackUri())
