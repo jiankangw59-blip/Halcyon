@@ -19,6 +19,6 @@ internal class HalcyonCastMediaItemConverter(
     override fun toMediaItem(mediaQueueItem: MediaQueueItem): MediaItem {
         val converted = delegate.toMediaItem(mediaQueueItem)
         val url = converted.localConfiguration?.uri?.toString().orEmpty()
-        return mediaServer.originalFor(url) ?: converted
+        return mediaServer.originalFor(url, converted.mediaId) ?: converted
     }
 }

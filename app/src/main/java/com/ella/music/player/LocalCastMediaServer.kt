@@ -38,6 +38,7 @@ internal class LocalCastMediaServer(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val entries = ConcurrentHashMap<String, Entry>()
     private val originals = ConcurrentHashMap<String, MediaItem>()
+    private val onlineOriginals = ConcurrentHashMap<Pair<String, String>, MediaItem>()
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
 
@@ -52,7 +53,7 @@ internal class LocalCastMediaServer(context: Context) {
             if ((!remote.scheme.equals("http", true) && !remote.scheme.equals("https", true)) ||
                 remote.host.isNullOrBlank()
             ) return null
-            originals[fallback] = mediaItem
+            onlineOriginals[fallback to mediaItem.mediaId] = mediaItem
             return fallback
         }
         if (uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) {
@@ -75,7 +76,8 @@ internal class LocalCastMediaServer(context: Context) {
         return url
     }
 
-    fun originalFor(url: String): MediaItem? = originals[url]
+    fun originalFor(url: String, mediaId: String): MediaItem? =
+        onlineOriginals[url to mediaId] ?: originals[url]
 
     @Synchronized
     private fun ensureStarted() {
@@ -187,6 +189,7 @@ internal class LocalCastMediaServer(context: Context) {
         acceptJob = null
         entries.clear()
         originals.clear()
+        onlineOriginals.clear()
         scope.cancel()
     }
 

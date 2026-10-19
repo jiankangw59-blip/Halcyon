@@ -2,6 +2,7 @@ package com.ella.music.player
 
 import android.app.Application
 import android.net.Uri
+import androidx.media3.cast.DefaultMediaItemConverter
 import androidx.media3.common.MediaItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -21,7 +22,46 @@ class LocalCastOnlineMediaTest {
         val item = onlineItem(url)
 
         assertEquals(url, server.urlFor(item))
-        assertSame(item, server.originalFor(url))
+        assertSame(item, server.originalFor(url, item.mediaId))
+    }
+
+    @Test
+    fun sameUrlQueueEntriesKeepDistinctIdentitiesThroughCastRoundTrip() = withServer { server ->
+        val url = "https://cdn.example.test/song.flac?token=shared"
+        val first = onlineItem(url, mediaId = "queue:track-id:0")
+        val second = onlineItem(url, mediaId = "queue:track-id:1")
+        val converter = HalcyonCastMediaItemConverter(server)
+
+        val firstCastItem = converter.toMediaQueueItem(first)
+        val secondCastItem = converter.toMediaQueueItem(second)
+
+        val delegate = DefaultMediaItemConverter()
+        assertEquals(first.mediaId, delegate.toMediaItem(firstCastItem).mediaId)
+        assertEquals(second.mediaId, delegate.toMediaItem(secondCastItem).mediaId)
+        assertEquals(url, firstCastItem.media?.contentUrl)
+        assertEquals(url, secondCastItem.media?.contentUrl)
+        assertSame(first, converter.toMediaItem(firstCastItem))
+        assertSame(second, converter.toMediaItem(secondCastItem))
+    }
+
+    @Test
+    fun ordinaryHttpItemDoesNotRestoreAnotherOnlineEntryWithTheSameUrl() = withServer { server ->
+        val url = "https://cdn.example.test/song.flac"
+        val online = onlineItem(url)
+        val direct = MediaItem.Builder()
+            .setMediaId("queue:direct:1")
+            .setUri(url)
+            .setMimeType("audio/flac")
+            .build()
+        val converter = HalcyonCastMediaItemConverter(server)
+        val onlineCastItem = converter.toMediaQueueItem(online)
+        val directCastItem = converter.toMediaQueueItem(direct)
+
+        assertNull(server.originalFor(url, direct.mediaId))
+        val restored = converter.toMediaItem(directCastItem)
+        assertEquals(direct.mediaId, restored.mediaId)
+        assertEquals(direct.localConfiguration?.uri, restored.localConfiguration?.uri)
+        assertSame(online, converter.toMediaItem(onlineCastItem))
     }
 
     @Test
@@ -37,13 +77,13 @@ class LocalCastOnlineMediaTest {
         val item = MediaItem.fromUri(url)
 
         assertEquals(url, server.urlFor(item))
-        assertNull(server.originalFor(url))
+        assertNull(server.originalFor(url, item.mediaId))
     }
 
-    private fun onlineItem(fallback: String?): MediaItem {
+    private fun onlineItem(fallback: String?, mediaId: String = "queue:track-id:0"): MediaItem {
         val uri = Uri.Builder().scheme(ONLINE_PLAYBACK_SCHEME).authority("tx").appendPath("track-id")
         fallback?.let { uri.appendQueryParameter("fallback", it) }
-        return MediaItem.Builder().setMediaId("queue:track-id:0").setUri(uri.build()).build()
+        return MediaItem.Builder().setMediaId(mediaId).setUri(uri.build()).setMimeType("audio/flac").build()
     }
 
     private fun withServer(block: (LocalCastMediaServer) -> Unit) {
