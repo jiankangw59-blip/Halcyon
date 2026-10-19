@@ -18,6 +18,7 @@ on:
           - debug
           - release
           - playback-test
+          - playback-test-release
 
 permissions:
   contents: read
@@ -31,7 +32,7 @@ jobs:
     name: Build arm64-v8a APK
     runs-on: ubuntu-latest
     env:
-      ORG_GRADLE_PROJECT_ellaApplicationId: ${{ inputs.build_type == 'playback-test' && 'com.ella.music.playbackfix' || 'com.ella.music' }}
+      ORG_GRADLE_PROJECT_ellaApplicationId: ${{ startsWith(inputs.build_type, 'playback-test') && 'com.ella.music.playbackfix' || 'com.ella.music' }}
 
     steps:
       - name: Checkout Halcyon
@@ -81,13 +82,13 @@ jobs:
             --stacktrace
 
       - name: Build debug APK
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_type != 'release' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || (inputs.build_type != 'release' && inputs.build_type != 'playback-test-release') }}
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
         run: ./gradlew --no-daemon :app:assembleDebug -PellaAbi=arm64-v8a --stacktrace
 
       - name: Build release APK
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.build_type == 'release' || inputs.build_type == 'playback-test-release') }}
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
           ALLOW_DEBUG_SIGNED_RELEASE: "true"
