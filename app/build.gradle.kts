@@ -123,7 +123,7 @@ android {
         System.getenv("ALLOW_DEBUG_SIGNED_RELEASE").equals("true", ignoreCase = true)
 
     defaultConfig {
-        applicationId = "com.ella.music"
+        applicationId = providers.gradleProperty("ellaApplicationId").orElse("com.ella.music").get()
         minSdk = 29
         targetSdk = 37
         versionCode = 40
