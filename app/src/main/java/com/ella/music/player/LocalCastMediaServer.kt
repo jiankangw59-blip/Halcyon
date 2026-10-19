@@ -44,6 +44,17 @@ internal class LocalCastMediaServer(context: Context) {
     @Synchronized
     fun urlFor(mediaItem: MediaItem, targetHost: String? = null): String? {
         val uri = mediaItem.localConfiguration?.uri ?: return null
+        if (uri.scheme == ONLINE_PLAYBACK_SCHEME) {
+            // Cast conversion is synchronous. Preserve its direct-URL behavior without
+            // blocking the player thread on an LX request or treating the identity as a file.
+            val fallback = uri.getQueryParameter("fallback") ?: return null
+            val remote = Uri.parse(fallback)
+            if ((!remote.scheme.equals("http", true) && !remote.scheme.equals("https", true)) ||
+                remote.host.isNullOrBlank()
+            ) return null
+            originals[fallback] = mediaItem
+            return fallback
+        }
         if (uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) {
             return uri.toString()
         }

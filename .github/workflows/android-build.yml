@@ -71,6 +71,19 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
+      - name: Verify online playlist playback
+        run: |
+          ./gradlew --no-daemon :app:testDebugUnitTest -PellaAbi=arm64-v8a \
+            --tests 'com.ella.music.player.OnlinePlaybackUriTest' \
+            --tests 'com.ella.music.data.OnlineResolvingDataSourceTest' \
+            --tests 'com.ella.music.player.PlaybackErrorRecovery*Test' \
+            --tests 'com.ella.music.player.PlaybackQueue*Test' \
+            --tests 'com.ella.music.player.LocalCast*Test' \
+            --tests 'com.ella.music.data.PcmWaveformScannerTest' \
+            --tests 'com.ella.music.data.lx.LxOnlineServicePolicyTest' \
+            --tests 'com.ella.music.data.musicfree.MusicFreeImportTest' \
+            --stacktrace
+
       - name: Build debug APK
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_type == 'debug' }}
         env:
