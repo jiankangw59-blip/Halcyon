@@ -49,7 +49,7 @@ internal class MusicFreeStreamHeaders internal constructor(private val storageFi
         chain.proceed(requestForHop(chain.request()))
     }
 
-    fun isMarked(url: String): Boolean = url.toHttpUrlOrNull()?.fragment?.startsWith(MARKER) == true
+    fun isMarked(url: String): Boolean = isMarkedUrl(url)
 
     /** Every request made by this client belongs to the same stream, including HLS children. */
     fun resolveStream(markedUrl: String, baseClient: OkHttpClient): ResolvedStream? {
@@ -176,6 +176,9 @@ internal class MusicFreeStreamHeaders internal constructor(private val storageFi
         )
 
         @Volatile private var instance: MusicFreeStreamHeaders? = null
+
+        fun isMarkedUrl(url: String): Boolean =
+            url.toHttpUrlOrNull()?.fragment?.startsWith(MARKER) == true
 
         fun getInstance(context: Context): MusicFreeStreamHeaders = instance ?: synchronized(this) {
             instance ?: MusicFreeStreamHeaders(

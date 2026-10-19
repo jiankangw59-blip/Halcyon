@@ -736,7 +736,8 @@ val dataSourceFactory = com.ella.music.data.OnlineResolvingDataSource.factory(
                 Log.d(TIMING_TAG, "service media transition reason=$reason mediaId=${mediaItem?.mediaId}")
                 localPlayer.activePlayer.setWakeMode(
                     if (mediaItem?.localConfiguration?.uri?.scheme.equals("http", ignoreCase = true) ||
-                        mediaItem?.localConfiguration?.uri?.scheme.equals("https", ignoreCase = true)
+                        mediaItem?.localConfiguration?.uri?.scheme.equals("https", ignoreCase = true) ||
+                        mediaItem?.localConfiguration?.uri?.scheme == ONLINE_PLAYBACK_SCHEME
                     ) {
                         C.WAKE_MODE_NETWORK
                     } else {

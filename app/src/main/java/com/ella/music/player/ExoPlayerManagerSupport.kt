@@ -10,6 +10,8 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaController
 import com.ella.music.data.isMediaStoreAlbumArtworkUri
 import com.ella.music.data.isUriAudioSource
+import com.ella.music.data.lx.LxSearchPlatform
+import com.ella.music.data.musicfree.MusicFreeStreamHeaders
 import com.ella.music.data.model.Song
 import com.ella.music.data.repository.mediaStoreAlbumArtUriString
 import java.io.File
@@ -82,9 +84,8 @@ internal fun buildPseudoShuffleSeed(sourceOrder: List<Song>, current: Song): Lon
 }
 
 /**
- * URI scheme used for online songs that have no resolved playback URL yet. It is swapped for
- * the real https URL by [com.ella.music.data.OnlineResolvingDataSource] each time ExoPlayer
- * opens the item, so a stale or absent URL never reaches the player as an empty Uri.
+ * Online identity resolved by [com.ella.music.data.OnlineResolvingDataSource] when playback
+ * opens an item. Saved LX HTTP URLs must be refreshed as well as initially unresolved songs.
  */
 internal const val ONLINE_PLAYBACK_SCHEME = "ella-online"
 
@@ -92,23 +93,29 @@ internal fun Song.playbackUri(): Uri {
     RemoteAudioCache.localFileIfCached(this)?.let { cached ->
         return Uri.fromFile(cached)
     }
+    val pathUri = path.toUri()
+    val isLxStream = LxSearchPlatform.entries.any { onlineSource in it.sourceKeys } &&
+        !MusicFreeStreamHeaders.isMarkedUrl(path) &&
+        (pathUri.scheme.equals("http", ignoreCase = true) ||
+            pathUri.scheme.equals("https", ignoreCase = true))
+    if (onlineSource.isNotBlank() && onlineId.isNotBlank() && (path.isBlank() || isLxStream)) {
+        return Uri.Builder()
+            .scheme(ONLINE_PLAYBACK_SCHEME)
+            .authority(onlineSource)
+            .appendPath(onlineId)
+            .apply {
+                // A saved direct URL remains usable when no source plugin is configured.
+                if (isLxStream) appendQueryParameter("fallback", path)
+            }
+            .build()
+    }
     if (path.isUriAudioSource()) {
-        return path.toUri()
+        return pathUri
     }
     if (onlineSource.isBlank() && path.startsWith("/") && id > 0L) {
         return ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
     }
-    // Songs imported from external players (LX Music, MusicFree, ...) keep onlineSource/
-    // onlineId but ship without a path. Returning `"".toUri()` here made ExoPlayer treat the
-    // entry as a local file:
-    //   java.io.FileNotFoundException: : open failed: ENOENT
-    //   PlaybackException code=ERROR_CODE_IO_FILE_NOT_FOUND uri=
-    // Hand out a resolvable placeholder instead; OnlineResolvingDataSource swaps it for a
-    // freshly resolved URL on every open.
-    if (path.isBlank() && onlineSource.isNotBlank() && onlineId.isNotBlank()) {
-        return Uri.parse("$ONLINE_PLAYBACK_SCHEME://$onlineSource/$onlineId")
-    }
-    return if (path.startsWith("/")) Uri.fromFile(File(path)) else path.toUri()
+    return if (path.startsWith("/")) Uri.fromFile(File(path)) else pathUri
 }
 
 internal fun Song.artworkUriForMediaCenter(includeAlbumFallback: Boolean = true): Uri? {

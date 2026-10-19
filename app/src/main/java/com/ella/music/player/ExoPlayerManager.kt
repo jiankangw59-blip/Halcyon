@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.Collections
@@ -169,6 +170,9 @@ class ExoPlayerManager(private val context: Context) {
     @Volatile
     private var playbackStateSaveGeneration = 0L
     private var decoderRecoveryJob: Job? = null
+    private val playbackErrorRecoveryPolicy = PlaybackErrorRecoveryPolicy()
+    private var playbackErrorRecoveryGeneration = 0L
+    private var playbackRecoverySuccessJob: Job? = null
     private var autoDecoderRetrySongKey: String? = null
     private var artworkAppliedSongKey: String? = null
     private var sessionMetadataSongKey: String? = null
@@ -479,6 +483,7 @@ class ExoPlayerManager(private val context: Context) {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (!isCurrentController()) return
+                observePlaybackRecoverySuccess(controller, isPlaying)
                 publishTransportState(isPlaying, controller.playWhenReady)
                 applyDeferredCurrentItemMetadataIfSafe(controller)
                 savePlaybackState(force = true)
@@ -703,7 +708,10 @@ class ExoPlayerManager(private val context: Context) {
 
             override fun onPlayerError(error: PlaybackException) {
                 if (!isCurrentController()) return
-                val song = _currentSong.value
+                val failedItem = controller.currentMediaItem ?: return
+                val failedOccurrence = PlaybackQueueOccurrence(failedItem.mediaId, controller.currentMediaItemIndex)
+                val generation = playbackErrorRecoveryGeneration
+                val song = failedItem.toSongFromMediaItemExtras() ?: _currentSong.value
                 AppLogStore.error(
                     context,
                     "PlayerError",
@@ -711,12 +719,20 @@ class ExoPlayerManager(private val context: Context) {
                     error
                 )
                 decoderRecoveryJob?.cancel()
-                decoderRecoveryJob = persistenceScope.launch {
-                    val recovered = song?.let { tryRecoverAutoDecoderPlayback(it) } == true
-                    if (!recovered) {
-                        withContext(Dispatchers.Main.immediate) {
-                            skipToNext()
-                        }
+                decoderRecoveryJob = commandScope.launch {
+                    // Finish the error event batch before issuing a new prepare through Binder.
+                    yield()
+                    fun stillCurrentFailure(): Boolean =
+                        mediaController === controller && controller.isConnected &&
+                            generation == playbackErrorRecoveryGeneration &&
+                            controller.currentMediaItem?.mediaId == failedOccurrence.mediaId &&
+                            controller.currentMediaItemIndex == failedOccurrence.index &&
+                            controller.playerError != null
+
+                    if (!stillCurrentFailure()) return@launch
+                    val recovered = song?.let { tryRecoverAutoDecoderPlayback(it, ::stillCurrentFailure) } == true
+                    if (!recovered && stillCurrentFailure()) {
+                        recoverFailedQueueItem(controller, failedOccurrence)
                     }
                 }
             }
@@ -794,6 +810,7 @@ class ExoPlayerManager(private val context: Context) {
         startPlayback: Boolean = true
     ) {
         if (songs.isEmpty()) return
+        resetPlaybackErrorRecovery()
         cancelPendingSeekCommand()
         if (resetQueueLock) _queueLocked.value = false
         val requestedIndex = startIndex.coerceIn(songs.indices)
@@ -912,6 +929,7 @@ class ExoPlayerManager(private val context: Context) {
         shouldPlay: Boolean = true
     ) {
         if (songs.isEmpty()) return
+        resetPlaybackErrorRecovery()
         cancelPendingSeekCommand()
         val safeIndex = currentIndex.coerceIn(songs.indices)
         externalSnapshotGuard = null
@@ -1110,6 +1128,7 @@ class ExoPlayerManager(private val context: Context) {
 
     fun playQueueIndex(index: Int, startPlayback: Boolean = true) {
         if (index !in playlist.indices) return
+        resetPlaybackErrorRecovery()
         cancelPendingSeekCommand()
         externalSnapshotGuard = null
         suppressExternalSnapshotsUntilMs = 0L
@@ -1121,8 +1140,10 @@ class ExoPlayerManager(private val context: Context) {
         rememberCurrentSongResumePosition()
         val resumePosition = resumePositionFor(playlist[index])
         _currentQueueIndex.value = index
+        if (!startPlayback) requestTransportState(target = false, controller = mediaController)
         mediaController?.seekTo(index, resumePosition)
-        requestTransportState(target = startPlayback, controller = mediaController)
+        mediaController?.let { if (it.playbackState == Player.STATE_IDLE) it.prepare() }
+        if (startPlayback) requestTransportState(target = true, controller = mediaController)
         updateCurrentSong()
         savePlaybackQueue(force = true)
     }
@@ -1250,6 +1271,7 @@ class ExoPlayerManager(private val context: Context) {
 
     fun clearPlaylist() {
         if (_queueLocked.value) return
+        resetPlaybackErrorRecovery()
         cancelPendingSeekCommand()
         externalSnapshotGuard = null
         suppressExternalSnapshotsUntilMs = SystemClock.elapsedRealtime() + CLEAR_EXTERNAL_SNAPSHOT_SUPPRESSION_MS
@@ -1327,6 +1349,12 @@ class ExoPlayerManager(private val context: Context) {
         val currentIntent = pendingTransportTargetOrNull()
             ?: controller?.playWhenReady
             ?: _playWhenReady.value
+        if (!currentIntent) {
+            resetPlaybackErrorRecovery()
+            if (controller != null && controller.mediaItemCount > 0 && controller.playbackState == Player.STATE_IDLE) {
+                controller.prepare()
+            }
+        }
         requestTransportState(target = !currentIntent, controller = controller)
     }
 
@@ -1339,12 +1367,14 @@ class ExoPlayerManager(private val context: Context) {
         mediaController?.currentPosition?.coerceAtLeast(0) ?: _currentPosition.value
 
     fun play() {
+        resetPlaybackErrorRecovery()
         val controller = activeController()
         if (controller == null) {
             requestTransportState(target = true, controller = null)
             return
         }
         if (controller.mediaItemCount > 0) {
+            if (controller.playbackState == Player.STATE_IDLE) controller.prepare()
             requestTransportState(target = true, controller = controller)
             refreshStateFromController(controller)
         }
@@ -1441,6 +1471,7 @@ class ExoPlayerManager(private val context: Context) {
 
     fun skipToNext(autoPlayIfPaused: Boolean = false) {
         val controller = mediaController ?: return
+        resetPlaybackErrorRecovery()
         val startPlayback = autoPlayIfPaused && !controller.playWhenReady
         cancelPendingSeekCommand()
         rememberCurrentSongResumePosition()
@@ -1457,12 +1488,14 @@ class ExoPlayerManager(private val context: Context) {
         if (!seekAdjacentPlaylistItem(controller, offset = 1, startPositionMs = { 0L })) {
             controller.seekToNextMediaItem()
         }
+        if (controller.playbackState == Player.STATE_IDLE) controller.prepare()
         if (startPlayback) requestTransportState(target = true, controller = controller)
         savePlaybackQueue(force = true)
     }
 
     fun skipToPrevious(autoPlayIfPaused: Boolean = false) {
         val controller = mediaController ?: return
+        resetPlaybackErrorRecovery()
         val startPlayback = autoPlayIfPaused && !controller.playWhenReady
         cancelPendingSeekCommand()
         rememberCurrentSongResumePosition()
@@ -1470,6 +1503,7 @@ class ExoPlayerManager(private val context: Context) {
             controller.seekToPreviousMediaItem()
             scheduleCurrentSongRefresh()
         }
+        if (controller.playbackState == Player.STATE_IDLE) controller.prepare()
         if (startPlayback) requestTransportState(target = true, controller = controller)
         savePlaybackQueue(force = true)
     }
@@ -1510,12 +1544,14 @@ class ExoPlayerManager(private val context: Context) {
     }
 
     fun restartCurrent(autoPlayIfPaused: Boolean = false) {
+        resetPlaybackErrorRecovery()
         cancelPendingSeekCommand()
         pendingOptimisticSongKey = null
         pendingOptimisticPreviousSongKey = null
         clearStaleTransitionGuard()
         activeController()?.run {
             seekToDefaultPosition(currentMediaItemIndex.coerceAtLeast(0))
+            if (playbackState == Player.STATE_IDLE) prepare()
             if (playWhenReady || autoPlayIfPaused) {
                 requestTransportState(target = true, controller = this)
             }
@@ -2246,7 +2282,73 @@ class ExoPlayerManager(private val context: Context) {
         return true
     }
 
-    private suspend fun tryRecoverAutoDecoderPlayback(song: Song): Boolean {
+    private fun resetPlaybackErrorRecovery() {
+        playbackErrorRecoveryGeneration++
+        decoderRecoveryJob?.cancel()
+        decoderRecoveryJob = null
+        playbackRecoverySuccessJob?.cancel()
+        playbackRecoverySuccessJob = null
+        playbackErrorRecoveryPolicy.reset()
+    }
+
+    private fun observePlaybackRecoverySuccess(controller: MediaController, isPlaying: Boolean) {
+        playbackRecoverySuccessJob?.cancel()
+        playbackRecoverySuccessJob = null
+        if (!isPlaying || !playbackErrorRecoveryPolicy.hasFailures) return
+        val mediaId = controller.currentMediaItem?.mediaId
+        val index = controller.currentMediaItemIndex
+        val startPositionMs = controller.currentPosition
+        playbackRecoverySuccessJob = commandScope.launch {
+            // READY can briefly report isPlaying before a bad stream fails. Require sustained
+            // playback and advancing position before granting another full failure pass.
+            while (true) {
+                delay(1_000L)
+                if (mediaController !== controller || !controller.isConnected || !controller.isPlaying ||
+                    controller.playerError != null || controller.currentMediaItem?.mediaId != mediaId ||
+                    controller.currentMediaItemIndex != index
+                ) return@launch
+                if (controller.currentPosition - startPositionMs >= 1_000L) {
+                    playbackErrorRecoveryPolicy.reset()
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun recoverFailedQueueItem(controller: MediaController, failed: PlaybackQueueOccurrence) {
+        val timeline = controller.currentTimeline
+        // A failed item must not repeat itself in repeat-one mode. Native shuffle still owns
+        // the traversal order until Halcyon materializes its shuffled queue.
+        val repeatMode = if (controller.repeatMode == Player.REPEAT_MODE_ONE) Player.REPEAT_MODE_ALL else controller.repeatMode
+        val nextIndex = if (failed.index in 0 until timeline.windowCount) {
+            timeline.getNextWindowIndex(failed.index, repeatMode, controller.shuffleModeEnabled)
+        } else C.INDEX_UNSET
+        val next = nextIndex.takeIf { it in 0 until controller.mediaItemCount }?.let {
+            PlaybackQueueOccurrence(controller.getMediaItemAt(it).mediaId, it)
+        }
+        when (val action = playbackErrorRecoveryPolicy.onFailure(failed, controller.mediaItemCount, next)) {
+            PlaybackErrorRecoveryAction.Ignore -> return
+            PlaybackErrorRecoveryAction.Stop -> {
+                requestTransportState(target = false, controller = controller)
+                controller.stop()
+                AppLogStore.warn(context, "PlayerError", "Stopped after consecutive queue failures or end of queue")
+            }
+            is PlaybackErrorRecoveryAction.Advance -> {
+                val shouldPlay = pendingTransportTargetOrNull() ?: controller.playWhenReady
+                cancelPendingSeekCommand()
+                if (!shouldPlay) requestTransportState(target = false, controller = controller)
+                val target = controller.getMediaItemAt(action.index).toSongFromMediaItemExtras()
+                    ?: playlist.getOrNull(action.index)
+                target?.let { applyOptimisticSong(it, 0L, action.index) }
+                controller.seekTo(action.index, 0L)
+                controller.prepare()
+                if (shouldPlay) requestTransportState(target = true, controller = controller)
+            }
+        }
+        savePlaybackQueue(force = true)
+    }
+
+    private suspend fun tryRecoverAutoDecoderPlayback(song: Song, stillCurrentFailure: () -> Boolean): Boolean {
         // Keep Auto genuinely automatic: normal queue changes stay inside the existing Media3
         // player (which already prepares its next media period). Rebuilding the service before
         // every AAC/ALAC track made rapid skips visibly stall and contradicted the setting's
@@ -2254,6 +2356,7 @@ class ExoPlayerManager(private val context: Context) {
         // failure, then retain the FFmpeg override for the remaining connected session.
         if (!song.isM4aOrAppleLosslessOrAACOrApe()) return false
         if (settingsManager.decoderMode.first() != DECODER_MODE_AUTO) return false
+        if (!stillCurrentFailure()) return false
         if (PlaybackService.decoderModeOverride.value == DECODER_MODE_FFMPEG_PREFER) return false
 
         val songKey = song.playbackStackKey()
@@ -2266,7 +2369,7 @@ class ExoPlayerManager(private val context: Context) {
             "PlayerDecoder",
             "Retry ${song.title} with FFmpeg after playback failure"
         )
-        val shouldResume = _playWhenReady.value || _isPlaying.value
+        val shouldResume = pendingTransportTargetOrNull() ?: mediaController?.playWhenReady ?: _playWhenReady.value
         withContext(Dispatchers.Main.immediate) {
             recreatePlaybackService(resumePlayback = shouldResume)
         }
@@ -2866,6 +2969,7 @@ class ExoPlayerManager(private val context: Context) {
         val saved = loadSavedQueue() ?: return
         if (saved.songs.isEmpty()) return
 
+        resetPlaybackErrorRecovery()
         isRestoringSavedQueue = true
         try {
             clearPendingShuffleReorder(disableNativeShuffle = true, clearOriginalOrder = false)

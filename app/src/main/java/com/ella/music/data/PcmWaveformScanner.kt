@@ -13,6 +13,7 @@ import androidx.media3.decoder.ffmpeg.FfmpegLibrary
 import androidx.media3.decoder.ffmpeg.OfflineFfmpegDecoder
 import androidx.media3.inspector.MediaExtractorCompat
 import com.ella.music.data.model.Song
+import com.ella.music.player.ONLINE_PLAYBACK_SCHEME
 import com.ella.music.player.playbackUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,8 @@ internal suspend fun scanPcmWaveform(
         if (source.scheme == "halcyon-netease") {
             source = android.net.Uri.parse(com.ella.music.data.netease.NeteaseLibraryStore.getInstance(context)
                 .streamUrl(source.lastPathSegment.orEmpty()))
+        } else if (source.scheme == ONLINE_PLAYBACK_SCHEME) {
+            source = android.net.Uri.parse(OnlineResolvingDataSource.resolveLx(context, source))
         }
         if (source.scheme.equals("http", true) || source.scheme.equals("https", true)) {
             extractor.setDataSource(source.toString(), mapOf("User-Agent" to "Mozilla/5.0"))

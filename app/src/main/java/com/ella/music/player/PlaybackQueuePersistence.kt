@@ -180,7 +180,10 @@ internal fun Song.toPlaybackQueueJson(): JSONObject = JSONObject()
     }
 
 internal fun JSONObject.toPlaybackQueueSongOrNull(): Song? {
-    val path = optString("path").takeIf { it.isNotBlank() } ?: return null
+    val path = optString("path")
+    val onlineSource = optString("onlineSource")
+    val onlineId = optString("onlineId")
+    if (path.isBlank() && (onlineSource.isBlank() || onlineId.isBlank())) return null
     return Song(
         id = optLong("id", path.hashCode().toLong()),
         title = optString("title").ifBlank { optString("fileName").ifBlank { path.substringAfterLast('/') } },
@@ -203,8 +206,8 @@ internal fun JSONObject.toPlaybackQueueSongOrNull(): Song? {
         arranger = optString("arranger"),
         lyricist = optString("lyricist"),
         coverUrl = optString("coverUrl"),
-        onlineSource = optString("onlineSource"),
-        onlineId = optString("onlineId"),
+        onlineSource = onlineSource,
+        onlineId = onlineId,
         onlineMvId = optString("onlineMvId"),
         playbackSourceKey = if (has("playbackSourceKey")) {
             optString("playbackSourceKey")
@@ -329,7 +332,7 @@ private fun JsonReader.readPlaybackQueueSongOrNull(): Song? {
     }
     endObject()
 
-    if (path.isBlank()) return null
+    if (path.isBlank() && (onlineSource.isBlank() || onlineId.isBlank())) return null
     val resolvedFileName = fileName.ifBlank { path.substringAfterLast('/') }
     return Song(
         id = id.takeIf { it != 0L } ?: path.hashCode().toLong(),

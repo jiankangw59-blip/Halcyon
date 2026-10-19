@@ -17,6 +17,8 @@ on:
         options:
           - debug
           - release
+          - playback-test
+          - playback-test-release
 
 permissions:
   contents: read
@@ -29,6 +31,8 @@ jobs:
   build-arm64:
     name: Build arm64-v8a APK
     runs-on: ubuntu-latest
+    env:
+      ORG_GRADLE_PROJECT_ellaApplicationId: ${{ startsWith(inputs.build_type, 'playback-test') && 'com.ella.music.playbackfix' || 'com.ella.music' }}
 
     steps:
       - name: Checkout Halcyon
@@ -56,14 +60,7 @@ jobs:
             "platform-tools" \
             "cmake;3.22.1" \
             "ndk;28.2.13676358"
-          if ! sdkmanager --channel=3 "platforms;android-37"; then
-            echo "platforms;android-37 is unavailable from sdkmanager; using android-36 as a CI compatibility platform."
-            sdkmanager "platforms;android-36"
-            mkdir -p "$ANDROID_HOME/platforms/android-37"
-            cp -a "$ANDROID_HOME/platforms/android-36/." "$ANDROID_HOME/platforms/android-37/"
-            sed -i 's/AndroidVersion.ApiLevel=36/AndroidVersion.ApiLevel=37/' "$ANDROID_HOME/platforms/android-37/source.properties"
-          fi
-          sdkmanager --channel=3 "build-tools;37.0.0" || sdkmanager "build-tools;36.0.0"
+          sdkmanager --channel=3 "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -71,14 +68,27 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
+      - name: Verify online playlist playback
+        run: |
+          ./gradlew --no-daemon :app:testDebugUnitTest -PellaAbi=arm64-v8a \
+            --tests 'com.ella.music.player.OnlinePlaybackUriTest' \
+            --tests 'com.ella.music.data.OnlineResolvingDataSourceTest' \
+            --tests 'com.ella.music.player.PlaybackErrorRecovery*Test' \
+            --tests 'com.ella.music.player.PlaybackQueue*Test' \
+            --tests 'com.ella.music.player.LocalCast*Test' \
+            --tests 'com.ella.music.data.PcmWaveformScannerTest' \
+            --tests 'com.ella.music.data.lx.LxOnlineServicePolicyTest' \
+            --tests 'com.ella.music.data.musicfree.MusicFreeImportTest' \
+            --stacktrace
+
       - name: Build debug APK
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_type == 'debug' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || (inputs.build_type != 'release' && inputs.build_type != 'playback-test-release') }}
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
         run: ./gradlew --no-daemon :app:assembleDebug -PellaAbi=arm64-v8a --stacktrace
 
       - name: Build release APK
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.build_type == 'release' || inputs.build_type == 'playback-test-release') }}
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
           ALLOW_DEBUG_SIGNED_RELEASE: "true"
@@ -92,10 +102,18 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Halcyon-arm64-v8a-${{ github.sha }}
+          name: Halcyon-${{ inputs.build_type || 'debug' }}-arm64-v8a-${{ github.sha }}
           path: |
             app/build/outputs/apk/debug/*arm64-v8a*.apk
             app/build/outputs/apk/release/*arm64-v8a*.apk
             app/build/outputs/renamed-apk/debug/*arm64-v8a*.APK
             app/build/outputs/renamed-apk/release/*arm64-v8a*.APK
           if-no-files-found: error
+
+      - name: Upload playback test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Halcyon-tests-${{ inputs.build_type || 'debug' }}-${{ github.sha }}
+          path: app/build/test-results/testDebugUnitTest/*.xml
+          if-no-files-found: warn
